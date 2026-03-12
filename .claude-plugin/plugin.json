@@ -1,0 +1,12 @@
+{
+  "name": "cf-crawl",
+  "version": "1.0.0",
+  "description": "Crawl any website via Cloudflare Browser Rendering API. Free Firecrawl alternative — returns clean markdown, HTML, or JSON. No rate limits, no API keys to buy.",
+  "author": {
+    "name": "mslugga35",
+    "url": "https://github.com/mslugga35"
+  },
+  "repository": "https://github.com/mslugga35/claude-plugin-cf-crawl",
+  "license": "MIT",
+  "keywords": ["crawl", "scrape", "cloudflare", "firecrawl", "web-scraping", "markdown"]
+}
