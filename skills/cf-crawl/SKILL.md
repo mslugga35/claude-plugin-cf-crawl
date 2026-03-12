@@ -67,6 +67,7 @@ for (const page of pages) {
 | `render` | `true` | Execute JS; `false` for static HTML (faster) |
 | `includePatterns` | — | Wildcard include (e.g., `"/blog/**"`) |
 | `excludePatterns` | — | Wildcard exclude (e.g., `"/admin/*"`) |
+| `--timeout` | 3600 | Max poll wait in seconds (`--wait` mode only) |
 
 ## Common Patterns
 
