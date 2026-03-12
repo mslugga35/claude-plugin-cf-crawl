@@ -62,7 +62,7 @@ for (const page of pages) {
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `limit` | 10 | Max pages to crawl (max 100,000) |
-| `depth` | 100,000 | Max link depth |
+| `depth` | CF default | Max link depth (omitted = no client-side limit) |
 | `formats` | `["markdown"]` | `html`, `markdown`, `json` |
 | `render` | `true` | Execute JS; `false` for static HTML (faster) |
 | `includePatterns` | — | Wildcard include (e.g., `"/blog/**"`) |

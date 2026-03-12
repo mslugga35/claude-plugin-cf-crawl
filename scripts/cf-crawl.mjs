@@ -13,12 +13,17 @@
  *   node cf-crawl.mjs <url> --exclude "/admin/*"    # skip matching paths
  *   node cf-crawl.mjs <url> --out results.json      # save to file
  *   node cf-crawl.mjs <url> --wait                  # poll until complete
+ *   node cf-crawl.mjs <url> --timeout 300           # max wait time in seconds
  *   node cf-crawl.mjs --status <job_id>             # check job status
  *   node cf-crawl.mjs --fetch <job_id> --out f.json # fetch results
  *   node cf-crawl.mjs --cancel <job_id>             # cancel a job
  *
  * Env: CF_API_TOKEN  (needs "Browser Rendering - Edit" permission)
  *      CF_ACCOUNT_ID (your Cloudflare account ID)
+ *
+ * Output strategy:
+ *   stdout = data (job ID or JSON results) — safe to pipe
+ *   stderr = progress, status, errors — human-readable logs
  */
 
 import { writeFileSync } from 'fs';
@@ -45,13 +50,16 @@ const headers = {
   'Content-Type': 'application/json',
 };
 
-// --- Parse args ---
+// --- Helpers ---
+
 const args = process.argv.slice(2);
 
 function getFlag(name) {
   const i = args.indexOf(name);
   if (i === -1) return null;
-  return args[i + 1] || true;
+  const val = args[i + 1];
+  if (!val || val.startsWith('--')) return null;
+  return val;
 }
 
 function hasFlag(name) {
@@ -61,16 +69,61 @@ function hasFlag(name) {
 function getAllFlags(name) {
   const values = [];
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === name && args[i + 1]) values.push(args[i + 1]);
+    if (args[i] === name && args[i + 1] && !args[i + 1].startsWith('--')) {
+      values.push(args[i + 1]);
+    }
   }
   return values;
 }
 
+/** Fetch with HTTP status validation. Throws on non-OK responses. */
+async function safeFetch(url, opts = {}) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '(no body)');
+    throw new Error(`HTTP ${res.status} from Cloudflare: ${body.slice(0, 500)}`);
+  }
+  return res.json();
+}
+
+/** Validate a string is a well-formed URL. */
+function validateUrl(str) {
+  try {
+    new URL(str);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Require a flag value to be a non-empty string. */
+function requireFlag(name) {
+  const val = getFlag(name);
+  if (!val) {
+    console.error(`ERROR: ${name} requires a value. Usage: ${name} <value>`);
+    process.exit(1);
+  }
+  return val;
+}
+
+/** Fetch all paginated records for a job. */
+async function fetchAllRecords(jobId) {
+  const records = [];
+  let cursor = null;
+  do {
+    const qs = cursor ? `?cursor=${cursor}` : '';
+    const data = await safeFetch(`${BASE}/${jobId}${qs}`, { headers });
+    records.push(...(data.result.records || []));
+    cursor = data.result.cursor || null;
+    console.error(`  Fetched ${records.length} records...`);
+  } while (cursor);
+  return records;
+}
+
 // --- Status check ---
 if (hasFlag('--status')) {
-  const jobId = getFlag('--status');
-  const res = await fetch(`${BASE}/${jobId}?limit=1`, { headers });
-  const data = await res.json();
+  const jobId = requireFlag('--status');
+  const data = await safeFetch(`${BASE}/${jobId}?limit=1`, { headers });
   if (!data.success) {
     console.error('Error:', data.errors);
     process.exit(1);
@@ -89,23 +142,9 @@ if (hasFlag('--status')) {
 
 // --- Fetch results ---
 if (hasFlag('--fetch')) {
-  const jobId = getFlag('--fetch');
+  const jobId = requireFlag('--fetch');
   const outFile = getFlag('--out');
-  let allRecords = [];
-  let cursor = null;
-
-  do {
-    const qs = cursor ? `?cursor=${cursor}` : '';
-    const res = await fetch(`${BASE}/${jobId}${qs}`, { headers });
-    const data = await res.json();
-    if (!data.success) {
-      console.error('Error:', data.errors);
-      process.exit(1);
-    }
-    allRecords.push(...(data.result.records || []));
-    cursor = data.result.cursor || null;
-    console.error(`Fetched ${allRecords.length} records...`);
-  } while (cursor);
+  const allRecords = await fetchAllRecords(jobId);
 
   const output = JSON.stringify(allRecords, null, 2);
   if (outFile) {
@@ -119,15 +158,14 @@ if (hasFlag('--fetch')) {
 
 // --- Cancel job ---
 if (hasFlag('--cancel')) {
-  const jobId = getFlag('--cancel');
-  const res = await fetch(`${BASE}/${jobId}`, { method: 'DELETE', headers });
-  const data = await res.json();
+  const jobId = requireFlag('--cancel');
+  const data = await safeFetch(`${BASE}/${jobId}`, { method: 'DELETE', headers });
   console.log(data.success ? `Cancelled job ${jobId}` : `Error: ${JSON.stringify(data.errors)}`);
   process.exit(0);
 }
 
 // --- Start crawl ---
-const url = args.find(a => a.startsWith('http'));
+const url = args.find(a => validateUrl(a));
 if (!url) {
   console.error('Usage: node cf-crawl.mjs <url> [options]');
   console.error('       node cf-crawl.mjs --status <job_id>');
@@ -144,6 +182,7 @@ const excludePatterns = getAllFlags('--exclude');
 const isStatic = hasFlag('--static');
 const isJson = hasFlag('--json');
 const wait = hasFlag('--wait');
+const timeoutSec = parseInt(getFlag('--timeout') || '3600');
 
 // Build request body
 const body = { url };
@@ -151,14 +190,14 @@ const body = { url };
 if (limit) body.limit = parseInt(limit);
 if (depth) body.depth = parseInt(depth);
 
+// Format selection — mutually exclusive
 const formats = [];
 if (isJson) formats.push('json');
-if (format === 'html') formats.push('html');
+else if (format === 'html') formats.push('html');
 else formats.push('markdown');
-if (formats.length) body.formats = formats;
+body.formats = formats;
 
-if (!isStatic && !hasFlag('--render')) body.render = true;
-if (isStatic) body.render = false;
+body.render = !isStatic;
 
 const options = {};
 if (includePatterns.length) options.includePatterns = includePatterns;
@@ -168,15 +207,13 @@ if (Object.keys(options).length) body.options = options;
 body.rejectResourceTypes = ['image', 'media', 'font'];
 
 console.error(`Crawling: ${url}`);
-console.error(`Config: limit=${body.limit || 10}, depth=${body.depth || 'unlimited'}, format=${formats.join(',')}, render=${body.render}`);
+console.error(`Config: limit=${body.limit || 10}, depth=${body.depth || 'CF default'}, format=${formats.join(',')}, render=${body.render}`);
 
-const res = await fetch(BASE, {
+const data = await safeFetch(BASE, {
   method: 'POST',
   headers,
   body: JSON.stringify(body),
 });
-
-const data = await res.json();
 
 if (!data.success) {
   console.error('Error starting crawl:', JSON.stringify(data.errors, null, 2));
@@ -193,16 +230,27 @@ if (!wait) {
   process.exit(0);
 }
 
-// --- Poll and wait for results ---
-console.error('Waiting for results...');
+// --- Poll and wait for results (bounded by --timeout) ---
+console.error(`Waiting for results (timeout: ${timeoutSec}s)...`);
+const deadline = Date.now() + timeoutSec * 1000;
 await new Promise(r => setTimeout(r, 5000));
 
 let result;
 let notFoundRetries = 0;
-while (true) {
+while (Date.now() < deadline) {
   await new Promise(r => setTimeout(r, 5000));
-  const pollRes = await fetch(`${BASE}/${jobId}?limit=1`, { headers });
-  const pollData = await pollRes.json();
+
+  let pollData;
+  try {
+    pollData = await safeFetch(`${BASE}/${jobId}?limit=1`, { headers });
+  } catch (err) {
+    if (notFoundRetries < 6 && err.message.includes('404')) {
+      notFoundRetries++;
+      console.error(`  Waiting for job to register... (${notFoundRetries}/6)`);
+      continue;
+    }
+    throw err;
+  }
 
   if (!pollData.success) {
     if (notFoundRetries < 6 && pollData.errors?.some(e => e.code === 1001)) {
@@ -220,20 +268,17 @@ while (true) {
   if (result.status !== 'running') break;
 }
 
+if (!result) {
+  console.error(`ERROR: Timed out after ${timeoutSec}s. Job ${jobId} may still be running.`);
+  console.error(`Check status: node cf-crawl.mjs --status ${jobId}`);
+  process.exit(1);
+}
+
 if (result.status !== 'completed') {
   console.error(`Job ended with status: ${result.status}`);
 }
 
-let allRecords = [];
-let cursor = null;
-
-do {
-  const qs = cursor ? `?cursor=${cursor}` : '';
-  const fetchRes = await fetch(`${BASE}/${jobId}${qs}`, { headers });
-  const fetchData = await fetchRes.json();
-  allRecords.push(...(fetchData.result.records || []));
-  cursor = fetchData.result.cursor || null;
-} while (cursor);
+const allRecords = await fetchAllRecords(jobId);
 
 console.error(`\nDone: ${allRecords.length} pages crawled in ${result.browserSecondsUsed}s`);
 

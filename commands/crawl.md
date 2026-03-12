@@ -8,8 +8,8 @@ Crawl the given website using Cloudflare Browser Rendering API.
 
 Run: `node ${CLAUDE_PLUGIN_ROOT}/scripts/cf-crawl.mjs $ARGUMENTS`
 
-If the user didn't specify `--wait`, add it automatically so results are returned inline.
-If the user didn't specify `--out`, save to a temp file and read the results.
+If the user didn't specify `--wait`, add `--wait` so results are returned inline.
+If the user didn't specify `--out`, add `--out /tmp/cf-crawl-results.json` and read the file after completion. Clean up the temp file when done.
 
 After crawling, summarize:
 - Total pages crawled

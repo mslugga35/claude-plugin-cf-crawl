@@ -1,0 +1,7 @@
+node_modules/
+*.json
+!.claude-plugin/plugin.json
+!package.json
+.DS_Store
+Thumbs.db
+*.log

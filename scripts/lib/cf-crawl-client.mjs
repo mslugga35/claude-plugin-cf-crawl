@@ -6,22 +6,34 @@
  *
  *   const jobId = await crawl('https://example.com', { limit: 20, formats: ['markdown'] });
  *   const pages = await crawlAndWait('https://example.com', { limit: 5 });
+ *
+ * Env: CF_API_TOKEN  (required — "Browser Rendering - Edit" permission)
+ *      CF_ACCOUNT_ID (required — your Cloudflare account ID)
  */
 
-const CF_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
-const CF_API_TOKEN = process.env.CF_API_TOKEN;
-
 function getBase() {
-  if (!CF_ACCOUNT_ID) throw new Error('CF_ACCOUNT_ID env var required');
-  return `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/browser-rendering/crawl`;
+  const id = process.env.CF_ACCOUNT_ID;
+  if (!id) throw new Error('CF_ACCOUNT_ID env var required. Find it at: https://dash.cloudflare.com');
+  return `https://api.cloudflare.com/client/v4/accounts/${id}/browser-rendering/crawl`;
 }
 
 function getHeaders() {
-  if (!CF_API_TOKEN) throw new Error('CF_API_TOKEN env var required');
+  const token = process.env.CF_API_TOKEN;
+  if (!token) throw new Error('CF_API_TOKEN env var required. Create at: https://dash.cloudflare.com/profile/api-tokens');
   return {
-    Authorization: `Bearer ${CF_API_TOKEN}`,
+    Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
   };
+}
+
+/** Fetch with HTTP status validation. */
+async function safeFetch(url, opts = {}) {
+  const res = await fetch(url, opts);
+  if (!res.ok) {
+    const body = await res.text().catch(() => '(no body)');
+    throw new Error(`HTTP ${res.status}: ${body.slice(0, 500)}`);
+  }
+  return res.json();
 }
 
 /**
@@ -42,24 +54,31 @@ export async function crawl(url, opts = {}) {
     if (opts.excludePatterns) body.options.excludePatterns = opts.excludePatterns;
   }
 
-  const res = await fetch(getBase(), {
+  const data = await safeFetch(getBase(), {
     method: 'POST',
     headers: getHeaders(),
     body: JSON.stringify(body),
   });
-  const data = await res.json();
   if (!data.success) throw new Error(`Crawl failed: ${JSON.stringify(data.errors)}`);
   return data.result;
 }
 
 /**
- * Get job status. Retries on "not found" (CF registration delay).
+ * Get job status. Retries on "not found" (CF has a registration delay).
  */
 export async function getStatus(jobId, retries = 6) {
   const base = getBase();
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(`${base}/${jobId}?limit=1`, { headers: getHeaders() });
-    const data = await res.json();
+    let data;
+    try {
+      data = await safeFetch(`${base}/${jobId}?limit=1`, { headers: getHeaders() });
+    } catch (err) {
+      if (attempt < retries && err.message.includes('404')) {
+        await new Promise(r => setTimeout(r, 5000));
+        continue;
+      }
+      throw err;
+    }
     if (!data.success) {
       const notFound = data.errors?.some(e => e.code === 1001);
       if (notFound && attempt < retries) {
@@ -70,10 +89,11 @@ export async function getStatus(jobId, retries = 6) {
     }
     return data.result;
   }
+  throw new Error(`getStatus: exceeded ${retries} retries without a successful response`);
 }
 
 /**
- * Get all results for a completed job. Handles pagination.
+ * Get all results for a completed job. Handles pagination automatically.
  */
 export async function getResults(jobId) {
   const base = getBase();
@@ -81,8 +101,7 @@ export async function getResults(jobId) {
   let cursor = null;
   do {
     const qs = cursor ? `?cursor=${cursor}` : '';
-    const res = await fetch(`${base}/${jobId}${qs}`, { headers: getHeaders() });
-    const data = await res.json();
+    const data = await safeFetch(`${base}/${jobId}${qs}`, { headers: getHeaders() });
     if (!data.success) throw new Error(`Fetch failed: ${JSON.stringify(data.errors)}`);
     records.push(...(data.result.records || []));
     cursor = data.result.cursor || null;
@@ -94,24 +113,36 @@ export async function getResults(jobId) {
  * Cancel a running job.
  */
 export async function cancelCrawl(jobId) {
-  const res = await fetch(`${getBase()}/${jobId}`, { method: 'DELETE', headers: getHeaders() });
-  const data = await res.json();
+  const data = await safeFetch(`${getBase()}/${jobId}`, { method: 'DELETE', headers: getHeaders() });
   if (!data.success) throw new Error(`Cancel failed: ${JSON.stringify(data.errors)}`);
   return true;
 }
 
 /**
  * Start a crawl and poll until complete. Returns all page records.
+ * @param {string} url - Starting URL
+ * @param {object} opts - Same as crawl() plus:
+ *   pollInterval (ms, default 5000)
+ *   maxWait (ms, default 3600000 = 1 hour)
+ *   onProgress (callback receiving status object)
  */
 export async function crawlAndWait(url, opts = {}) {
   const jobId = await crawl(url, opts);
   const interval = opts.pollInterval || 5000;
+  const maxWait = opts.maxWait || 3600000;
+  const deadline = Date.now() + maxWait;
 
-  while (true) {
+  await new Promise(r => setTimeout(r, 5000));
+
+  while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, interval));
     const status = await getStatus(jobId);
     if (opts.onProgress) opts.onProgress(status);
     if (status.status !== 'running') break;
+  }
+
+  if (Date.now() >= deadline) {
+    throw new Error(`crawlAndWait: timed out after ${maxWait}ms. Job ${jobId} may still be running.`);
   }
 
   return getResults(jobId);

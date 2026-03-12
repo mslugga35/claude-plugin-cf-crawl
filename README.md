@@ -5,7 +5,11 @@ A Claude Code plugin that crawls any website via Cloudflare Browser Rendering AP
 ## Install
 
 ```bash
+# From the official marketplace (once accepted)
 /plugin install cf-crawl@claude-plugins-official
+
+# Or install directly from GitHub
+/plugin install https://github.com/mslugga35/claude-plugin-cf-crawl
 ```
 
 ## Setup
@@ -70,7 +74,8 @@ const pages = await crawlAndWait('https://example.com', {
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `limit` | 10 | Max pages (up to 100,000) |
-| `depth` | 100,000 | Max link depth |
+| `depth` | CF default | Max link depth |
+| `--timeout` | 3600 | Max poll wait (seconds, `--wait` mode) |
 | `formats` | `["markdown"]` | `html`, `markdown`, `json` |
 | `render` | `true` | JS rendering (`false` = faster) |
 | `includePatterns` | — | Wildcard include filter |
